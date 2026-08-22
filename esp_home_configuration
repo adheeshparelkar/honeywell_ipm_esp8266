@@ -1,0 +1,376 @@
+esphome:
+  name: esphome-web-ipmi2c
+  friendly_name: IPM I2C Sensor
+  min_version: 2025.11.0
+  name_add_mac_suffix: false
+
+esp8266:
+  board: d1_mini
+
+logger:
+  level: DEBUG
+  logs:
+    wifi: WARN
+
+api:
+  encryption:
+    key: !secret_api_key
+
+ota:
+  - platform: esphome
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  min_auth_mode: WPA2
+
+i2c:
+  sda: GPIO4
+  scl: GPIO5
+  scan: true
+  frequency: 100kHz
+
+i2c_device:
+  id: honeywell_pmc
+  address: 0x08
+
+globals:
+
+  - id: pm1_value
+    type: float
+    restore_value: no
+    initial_value: '0'
+
+  - id: pm25_value
+    type: float
+    restore_value: no
+    initial_value: '0'
+
+  - id: pm4_value
+    type: float
+    restore_value: no
+    initial_value: '0'
+
+  - id: pm10_value
+    type: float
+    restore_value: no
+    initial_value: '0'
+
+  - id: crc_errors
+    type: int
+    restore_value: no
+    initial_value: '0'
+sensor:
+
+  - platform: template
+    name: "PM1.0"
+    id: pm1_sensor
+    unit_of_measurement: "ug/m³"
+    state_class: measurement
+    accuracy_decimals: 0
+    update_interval: never
+
+  - platform: template
+    name: "PM2.5"
+    id: pm25_sensor
+    unit_of_measurement: "ug/m³"
+    state_class: measurement
+    accuracy_decimals: 0
+    update_interval: never
+
+  - platform: template
+    name: "PM4.0"
+    id: pm4_sensor
+    unit_of_measurement: "ug/m³"
+    state_class: measurement
+    accuracy_decimals: 0
+    update_interval: never
+
+  - platform: template
+    name: "PM10"
+    id: pm10_sensor
+    unit_of_measurement: "ug/m³"
+    state_class: measurement
+    accuracy_decimals: 0
+    update_interval: never
+
+  - platform: template
+    name: "PM CRC Errors"
+    id: crc_error_sensor
+    unit_of_measurement: "errors"
+    state_class: total_increasing
+    accuracy_decimals: 0
+    update_interval: never
+
+interval:
+
+  - interval: 3000s
+    then:
+      - lambda: |-
+
+          const uint8_t start_command[] = {
+            0x00,
+            0x10,
+            0x05,
+            0x00,
+            0xF6
+          };
+
+          auto result = id(honeywell_pmc).write(
+            start_command,
+            sizeof(start_command)
+          );
+
+          if (result != esphome::i2c::ERROR_OK) {
+
+            ESP_LOGE(
+              "ih_pmc_002",
+              "Start measurement failed: I2C error %d",
+              result
+            );
+
+          } else {
+
+            ESP_LOGD(
+              "ih_pmc_002",
+              "Start measurement command sent"
+            );
+          }
+
+
+  - interval: 1s
+    then:
+      - lambda: |-
+      
+          auto crc8 = [](const uint8_t *data, uint8_t length) -> uint8_t {
+
+            uint8_t crc = 0xFF;
+
+            for (uint8_t byte = 0; byte < length; byte++) {
+
+              crc ^= data[byte];
+
+              for (uint8_t bit = 8; bit > 0; bit--) {
+
+                if (crc & 0x80) {
+                  crc = (uint8_t)((crc << 1) ^ 0x31);
+                } else {
+                  crc = (uint8_t)(crc << 1);
+                }
+              }
+            }
+
+            return crc;
+          };
+
+          
+          const uint8_t read_command[] = {
+            0x03,
+            0x00
+          };
+
+          auto write_result = id(honeywell_pmc).write(
+            read_command,
+            sizeof(read_command)
+          );
+
+          if (write_result != esphome::i2c::ERROR_OK) {
+
+            ESP_LOGE(
+              "ih_pmc_002",
+              "Read command failed: I2C error %d",
+              write_result
+            );
+
+            return;
+          }
+
+          
+          uint8_t data[30];
+
+          auto read_result =
+            id(honeywell_pmc).read(data, sizeof(data));
+
+          if (read_result != esphome::i2c::ERROR_OK) {
+
+            ESP_LOGE(
+              "ih_pmc_002",
+              "Data read failed: I2C error %d",
+              read_result
+            );
+
+            return;
+          }
+
+          
+          ESP_LOGD(
+            "ih_pmc_002",
+            "RX: "
+            "%02X %02X %02X "
+            "%02X %02X %02X "
+            "%02X %02X %02X "
+            "%02X %02X %02X "
+            "%02X %02X %02X "
+            "%02X %02X %02X "
+            "%02X %02X %02X "
+            "%02X %02X %02X "
+            "%02X %02X %02X "
+            "%02X %02X %02X",
+            data[0],  data[1],  data[2],
+            data[3],  data[4],  data[5],
+            data[6],  data[7],  data[8],
+            data[9],  data[10], data[11],
+            data[12], data[13], data[14],
+            data[15], data[16], data[17],
+            data[18], data[19], data[20],
+            data[21], data[22], data[23],
+            data[24], data[25], data[26],
+            data[27], data[28], data[29]
+          );
+
+          
+          uint8_t pm1_crc =
+            crc8(&data[0], 2);
+
+          bool pm1_valid =
+            (pm1_crc == data[2]);
+
+         
+          uint8_t pm25_crc =
+            crc8(&data[3], 2);
+
+          bool pm25_valid =
+            (pm25_crc == data[5]);
+
+          
+          uint8_t pm4_crc =
+            crc8(&data[6], 2);
+
+          bool pm4_valid =
+            (pm4_crc == data[8]);
+
+          
+
+          uint8_t pm10_crc =
+            crc8(&data[9], 2);
+
+          bool pm10_valid =
+            (pm10_crc == data[11]);
+
+
+
+          ESP_LOGD(
+            "ih_pmc_002",
+            "CRC: PM1=%02X/%02X PM2.5=%02X/%02X PM4=%02X/%02X PM10=%02X/%02X",
+            pm1_crc,
+            data[2],
+            pm25_crc,
+            data[5],
+            pm4_crc,
+            data[8],
+            pm10_crc,
+            data[11]
+          );
+
+
+          if (pm1_valid) {
+
+            uint16_t value =
+              ((uint16_t)data[0] << 8) |
+              data[1];
+
+            id(pm1_value) = value;
+
+            id(pm1_sensor).publish_state(value);
+
+          } else {
+
+            ESP_LOGW(
+              "ih_pmc_002",
+              "PM1.0 CRC ERROR"
+            );
+          }
+
+         
+          if (pm25_valid) {
+
+            uint16_t value =
+              ((uint16_t)data[3] << 8) |
+              data[4];
+
+            id(pm25_value) = value;
+
+            id(pm25_sensor).publish_state(value);
+
+          } else {
+
+            ESP_LOGW(
+              "ih_pmc_002",
+              "PM2.5 CRC ERROR"
+            );
+          }
+
+ 
+
+          if (pm4_valid) {
+
+            uint16_t value =
+              ((uint16_t)data[6] << 8) |
+              data[7];
+
+            id(pm4_value) = value;
+
+            id(pm4_sensor).publish_state(value);
+
+          } else {
+
+            ESP_LOGW(
+              "ih_pmc_002",
+              "PM4.0 CRC ERROR"
+            );
+          }
+
+ 
+
+          if (pm10_valid) {
+
+            uint16_t value =
+              ((uint16_t)data[9] << 8) |
+              data[10];
+
+            id(pm10_value) = value;
+
+            id(pm10_sensor).publish_state(value);
+
+          } else {
+
+            ESP_LOGW(
+              "ih_pmc_002",
+              "PM10 CRC ERROR"
+            );
+          }
+
+     
+          if (
+            !pm1_valid ||
+            !pm25_valid ||
+            !pm4_valid ||
+            !pm10_valid
+          ) {
+
+            id(crc_errors)++;
+
+            id(crc_error_sensor).publish_state(
+              id(crc_errors)
+            );
+          }
+
+        
+          ESP_LOGI(
+            "ih_pmc_002",
+            "PM1.0=%u ug/m3 | PM2.5=%u ug/m3 | PM4.0=%u ug/m3 | PM10=%u ug/m3",
+            (unsigned)id(pm1_value),
+            (unsigned)id(pm25_value),
+            (unsigned)id(pm4_value),
+            (unsigned)id(pm10_value)
+          );
